@@ -650,7 +650,7 @@ namespace SoapCore.Meta
 			{
 				writer.WriteAttributeString("targetNamespace", @namespace);
 			}
-			else if (typeInfo.IsValueType && typeInfo.Namespace.StartsWith("System"))
+			else if (typeInfo.IsValueType && typeInfo.BaseType.Namespace.StartsWith("System"))
 			{
 				string xsTypename;
 				if (typeof(DateTimeOffset).IsAssignableFrom(type))

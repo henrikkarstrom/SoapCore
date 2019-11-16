@@ -597,6 +597,11 @@ namespace SoapCore
 			return arguments;
 		}
 
+			if (parameterName != xmlReader.Name)
+			{
+				return null;
+			}
+
 		/// <summary>
 		/// Helper message to write an error response message in case of an exception.
 		/// </summary>
