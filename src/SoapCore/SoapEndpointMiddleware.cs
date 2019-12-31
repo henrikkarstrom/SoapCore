@@ -9,6 +9,7 @@ using System.Runtime.CompilerServices;
 using System.ServiceModel;
 using System.ServiceModel.Channels;
 using System.Threading.Tasks;
+using System.Xml.Serialization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,6 +25,7 @@ namespace SoapCore
 	{
 		private readonly ILogger<SoapEndpointMiddleware> _logger;
 		private readonly RequestDelegate _next;
+		private readonly SoapOptions _options;
 		private readonly ServiceDescription _service;
 		private readonly string _endpointPath;
 		private readonly SoapSerializer _serializer;
@@ -62,6 +64,7 @@ namespace SoapCore
 		{
 			_logger = logger;
 			_next = next;
+			_options = options;
 			_endpointPath = options.Path;
 			_serializer = options.SoapSerializer;
 			_serializerHelper = new SerializerHelper(_serializer);
@@ -82,7 +85,25 @@ namespace SoapCore
 
 		public async Task Invoke(HttpContext httpContext, IServiceProvider serviceProvider)
 		{
-			httpContext.Request.EnableBuffering();
+			if (_options != null)
+			{
+				if (_options.BufferThreshold > 0 && _options.BufferLimit > 0)
+				{
+					httpContext.Request.EnableBuffering(_options.BufferThreshold, _options.BufferLimit);
+				}
+				else if (_options.BufferThreshold > 0)
+				{
+					httpContext.Request.EnableBuffering(_options.BufferThreshold);
+				}
+				else
+				{
+					httpContext.Request.EnableBuffering();
+				}
+			}
+			else
+			{
+				httpContext.Request.EnableBuffering();
+			}
 
 			var trailPathTuner = serviceProvider.GetServices<TrailingServicePathTuner>().FirstOrDefault();
 
@@ -266,6 +287,12 @@ namespace SoapCore
 					var invoker = serviceProvider.GetService<IOperationInvoker>() ?? new DefaultOperationInvoker();
 					var responseObject = await invoker.InvokeAsync(operation.DispatchMethod, serviceInstance, arguments);
 
+					if (operation.IsOneWay)
+					{
+						httpContext.Response.StatusCode = (int)HttpStatusCode.Accepted;
+						return;
+					}
+
 					var resultOutDictionary = new Dictionary<string, object>();
 					foreach (var parameterInfo in operation.OutParameters)
 					{
@@ -437,7 +464,15 @@ namespace SoapCore
 					}
 					else
 					{
-						arguments[parameterInfo.Index] = _serializerHelper.DeserializeInputParameter(xmlReader, parameterType, parameterInfo.Name, operation.Contract.Namespace, parameterInfo);
+						var argumentValue = _serializerHelper.DeserializeInputParameter(xmlReader, parameterType, parameterInfo.Name, operation.Contract.Namespace, parameterInfo);
+
+						//fix https://github.com/DigDes/SoapCore/issues/379 (hack, need research)
+						if (argumentValue == null)
+						{
+							argumentValue = _serializerHelper.DeserializeInputParameter(xmlReader, parameterType, parameterInfo.Name, parameterInfo.Namespace, parameterInfo);
+						}
+
+						arguments[parameterInfo.Index] = argumentValue;
 					}
 				}
 			}
@@ -458,8 +493,29 @@ namespace SoapCore
 
 				if (messageContractAttribute.IsWrapped && !parameterType.GetMembersWithAttribute<MessageHeaderAttribute>().Any())
 				{
-					// It's wrapped so we treat it like normal!
-					arguments[parameterInfo.Index] = _serializerHelper.DeserializeInputParameter(xmlReader, parameterInfo.Parameter.ParameterType, parameterInfo.Name, @namespace, parameterInfo);
+					https://github.com/DigDes/SoapCore/issues/385
+					if (operation.DispatchMethod.GetCustomAttribute<XmlSerializerFormatAttribute>()?.Style == OperationFormatStyle.Rpc)
+					{
+						var importer = new SoapReflectionImporter(@namespace);
+						var map = new XmlReflectionMember
+						{
+							IsReturnValue = false,
+							MemberName = parameterInfo.Name,
+							MemberType = parameterType
+						};
+						var mapping = importer.ImportMembersMapping(parameterInfo.Name, @namespace, new[] { map }, false, true);
+						var serializer = XmlSerializer.FromMappings(new[] { mapping })[0];
+						var value = serializer.Deserialize(xmlReader);
+						if (value is object[] o && o.Length > 0)
+						{
+							arguments[parameterInfo.Index] = o[0];
+						}
+					}
+					else
+					{
+						// It's wrapped so we treat it like normal!
+						arguments[parameterInfo.Index] = _serializerHelper.DeserializeInputParameter(xmlReader, parameterInfo.Parameter.ParameterType, parameterInfo.Name, @namespace, parameterInfo);
+					}
 				}
 				else
 				{
