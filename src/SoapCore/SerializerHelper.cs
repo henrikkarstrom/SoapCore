@@ -100,6 +100,11 @@ namespace SoapCore
 				xmlReader.ReadStartElement(parameterName, parameterNs);
 			}
 
+			if (parameterName != xmlReader.Name)
+			{
+				return null;
+			}
+
 			var elementType = parameterType.GetElementType();
 
 			var localName = parameterInfo.ArrayItemName ?? elementType.Name;
